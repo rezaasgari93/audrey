@@ -3,7 +3,7 @@
 import { useProject } from "@/lib/context/ProjectContext";
 
 export function HistoryStrip() {
-  const { renders, activeRenderId, setActiveRender, revertToRender } = useProject();
+  const { renders, activeRenderId, revertToRender } = useProject();
 
   if (renders.length === 0) {
     return (
@@ -22,10 +22,7 @@ export function HistoryStrip() {
           <button
             key={r.id}
             type="button"
-            onClick={() => {
-              setActiveRender(r.id);
-              void revertToRender(r.id);
-            }}
+            onClick={() => void revertToRender(r.id)}
             title={`${modeLabel} · ${new Date(r.createdAt).toLocaleString()}`}
             className={`group relative h-16 w-16 shrink-0 overflow-hidden rounded border-2 transition-colors ${
               active

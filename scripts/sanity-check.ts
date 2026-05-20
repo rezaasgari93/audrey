@@ -21,8 +21,17 @@
 import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { deflateSync } from "node:zlib";
+import * as zlib from "node:zlib";
 
 import { GoogleGenAI } from "@google/genai";
+
+// node:zlib.crc32 only exists on Node ≥ 22.2.0; we fall back to crc32Manual
+// below for older runtimes. Capture it once at module load.
+const zlibCrc32: ((buf: Buffer) => number) | undefined =
+  typeof (zlib as { crc32?: unknown }).crc32 === "function"
+    ? ((zlib as unknown as { crc32: (buf: Buffer) => number }).crc32)
+    : undefined;
 
 import { buildPrompt } from "../lib/gemini/prompt-template.js";
 import type { RenderRequest } from "../lib/types.js";
@@ -219,10 +228,7 @@ function encodeGrayscalePng(
   width: number,
   height: number,
 ): Uint8Array {
-  // Minimal PNG: IHDR (color type 0 = grayscale) + IDAT (uncompressed via
-  // zlib with deflate stored blocks would require zlib; use Node's zlib).
-  const { deflateSync } = require("node:zlib") as typeof import("node:zlib");
-
+  // Minimal PNG: IHDR (color type 0 = grayscale) + IDAT (zlib-deflated rows).
   // Filter byte 0 (None) per row, then row bytes.
   const raw = new Uint8Array((width + 1) * height);
   for (let y = 0; y < height; y++) {
@@ -249,16 +255,12 @@ function encodeGrayscalePng(
 }
 
 function chunk(type: string, data: Buffer): Buffer {
-  const { crc32 } = require("node:zlib") as typeof import("node:zlib") & {
-    crc32: (data: Buffer) => number;
-  };
   const len = Buffer.alloc(4);
   len.writeUInt32BE(data.length, 0);
   const typeBuf = Buffer.from(type, "ascii");
   const crcBuf = Buffer.alloc(4);
-  // crc32 exists in Node ≥18; fall back to a hand-rolled CRC if absent.
   const crcInput = Buffer.concat([typeBuf, data]);
-  const crc = typeof crc32 === "function" ? crc32(crcInput) : crc32Manual(crcInput);
+  const crc = zlibCrc32 ? zlibCrc32(crcInput) : crc32Manual(crcInput);
   crcBuf.writeUInt32BE(crc >>> 0, 0);
   return Buffer.concat([len, typeBuf, data, crcBuf]);
 }

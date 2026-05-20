@@ -1,16 +1,10 @@
 import type { NextConfig } from "next";
 
-const nextConfig: NextConfig = {
-  // Doc 02 §8.1: source/refs are downsampled client-side to ≤4096px and
-  // sent as base64. With several refs the payload can exceed Next's default
-  // 1MB body limit on Server Actions; the /api/render route uses req.json()
-  // (not a Server Action), but we still bump the experimental body limit
-  // for safety. Vercel hobby caps at 4.5MB regardless — keep client downsampling.
-  experimental: {
-    serverActions: {
-      bodySizeLimit: "10mb",
-    },
-  },
-};
+// No route-handler request-body knob exists in Next.js (the
+// experimental.serverActions.bodySizeLimit option only applies to Server
+// Actions, not POSTs to /api/* route handlers). The only lever for staying
+// under Vercel's 4.5 MB hobby-tier request cap is client-side downsampling
+// — see lib/images/downsample.ts.
+const nextConfig: NextConfig = {};
 
 export default nextConfig;

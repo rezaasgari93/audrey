@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useRef } from "react";
+
 import { Button } from "@/components/ui/Button";
 
 interface ConfirmModalProps {
@@ -23,6 +25,30 @@ export function ConfirmModal({
   onConfirm,
   onCancel,
 }: ConfirmModalProps) {
+  const confirmRef = useRef<HTMLButtonElement>(null);
+
+  // Autofocus the confirm button on open.
+  useEffect(() => {
+    if (open) confirmRef.current?.focus();
+  }, [open]);
+
+  // Esc cancels, Enter confirms. Bound to document while the modal is open
+  // so the user doesn't need to hunt for a focusable target first.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onCancel();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        onConfirm();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onCancel, onConfirm]);
+
   if (!open) return null;
   return (
     <div
@@ -42,6 +68,7 @@ export function ConfirmModal({
             {cancelLabel}
           </Button>
           <Button
+            ref={confirmRef}
             variant={confirmVariant === "danger" ? "danger" : "primary"}
             onClick={onConfirm}
           >

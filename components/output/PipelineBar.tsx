@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { Download, Loader2, Sparkles } from "lucide-react";
+import { Download, Loader2, Sparkles, X } from "lucide-react";
 
 import { Button } from "@/components/ui/Button";
 import { useProject } from "@/lib/context/ProjectContext";
@@ -14,6 +14,7 @@ export function PipelineBar() {
     activeRenderId,
     isRendering,
     runRender,
+    abortRender,
     pushToast,
   } = useProject();
 
@@ -74,6 +75,15 @@ export function PipelineBar() {
           )}
           {isRendering ? "Rendering…" : "Render (Photoreal)"}
         </Button>
+        {isRendering && (
+          <Button
+            variant="ghost"
+            onClick={abortRender}
+            title="Cancel this render"
+          >
+            <X size={14} /> Stop
+          </Button>
+        )}
         <span className="text-[10px] text-[var(--color-text-muted)]">
           Sketch · coming after pause
         </span>

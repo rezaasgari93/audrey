@@ -6,19 +6,20 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { nanoid } from "nanoid";
 
 import {
   appendRender,
+  clearGalleryRenders,
   getOrCreateDefaultProject,
   listRenders,
   saveProject,
 } from "@/lib/db/projects";
 import { blobForTransit } from "@/lib/images/downsample";
-import { blobToBase64 } from "@/lib/images/blob";
-import { makeThumbnail } from "@/lib/images/upload";
+import { makeThumbnail, THUMBNAIL_MAX_EDGE } from "@/lib/images/upload";
 import type {
   AmendmentMask,
   Gallery,
@@ -69,6 +70,7 @@ export interface ProjectContextValue {
     sketchMedium?: SketchMedium;
     amendment?: AmendmentMask;
   }): Promise<void>;
+  abortRender(): void;
   setActiveRender(id: string | null): void;
   revertToRender(id: string): Promise<void>;
 
@@ -85,6 +87,10 @@ export function useProject(): ProjectContextValue {
   return ctx;
 }
 
+// Master-prompt draft persistence is debounced — keystrokes are common,
+// IndexedDB writes don't need to chase every one.
+const DRAFT_DEBOUNCE_MS = 350;
+
 // ---------- Provider ----------
 
 export function ProjectProvider({ children }: { children: React.ReactNode }) {
@@ -96,6 +102,21 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
   const [renderError, setRenderError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
+  // projectRef mirrors `project` state but is updated synchronously on every
+  // mutation so async callbacks (debounced writes, in-flight render
+  // completion) always read the freshest value rather than a stale closure.
+  const projectRef = useRef<Project | null>(null);
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
+
+  // Debounced draft persistence — see setMasterDraft.
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingDraftRef = useRef<string | null>(null);
+
+  // In-flight render cancellation — see runRender / abortRender.
+  const renderAbortRef = useRef<AbortController | null>(null);
+
   // Initial load.
   useEffect(() => {
     let cancelled = false;
@@ -104,6 +125,7 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
       const rs = await listRenders(g.id);
       if (cancelled) return;
       setProject(p);
+      projectRef.current = p;
       setGallery(g);
       setRenders(rs);
       setActiveRenderId(rs.length > 0 ? rs[rs.length - 1].id : null);
@@ -115,6 +137,23 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
       cancelled = true;
     };
   }, []);
+
+  // Flush any pending debounced draft when the provider unmounts.
+  useEffect(
+    () => () => {
+      if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
+      const pending = pendingDraftRef.current;
+      const curr = projectRef.current;
+      if (pending !== null && curr) {
+        const next: Project = {
+          ...curr,
+          masterPrompt: { ...curr.masterPrompt, draft: pending },
+        };
+        void saveProject(next);
+      }
+    },
+    [],
+  );
 
   // ---------- Helpers ----------
 
@@ -132,15 +171,16 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
+  // Read latest project via ref, apply the mutation, persist. No closure
+  // capture on `project`, no double-fire in StrictMode.
   const updateProject = useCallback(
-    async (mutate: (p: Project) => Project) => {
-      let next: Project | null = null;
-      setProject((curr) => {
-        if (!curr) return curr;
-        next = mutate(curr);
-        return next;
-      });
-      if (next) await saveProject(next);
+    async (mutate: (p: Project) => Project): Promise<void> => {
+      const curr = projectRef.current;
+      if (!curr) return;
+      const next = mutate(curr);
+      projectRef.current = next;
+      setProject(next);
+      await saveProject(next);
     },
     [],
   );
@@ -188,49 +228,49 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
     [updateProject],
   );
 
+  // Updates the draft in React state immediately (for snappy UI) but
+  // debounces the IndexedDB write. The debounced flush reads the FRESHEST
+  // project from projectRef so a render that completes mid-typing — which
+  // appended a new PromptLayer — is not clobbered.
   const setMasterDraft = useCallback<ProjectContextValue["setMasterDraft"]>(
     (draft) => {
-      // Draft typing is high-frequency — debounce the persist by deferring it
-      // to a microtask via updateProject's async write, which is fine.
-      setProject((p) =>
-        p ? { ...p, masterPrompt: { ...p.masterPrompt, draft } } : p,
-      );
-      // Persist on every keystroke is fine for a single-user IDB write.
-      // If this proves slow we can debounce.
-      void saveProjectDraft(draft);
-    },
-    [],
-  );
-
-  // Persist the in-progress draft without going through updateProject's
-  // full clone-and-write each keystroke — small perf optimization.
-  const saveProjectDraft = useCallback(
-    async (draft: string) => {
-      const curr = project;
+      const curr = projectRef.current;
       if (!curr) return;
-      if (curr.masterPrompt.draft === draft) return;
       const next: Project = {
         ...curr,
         masterPrompt: { ...curr.masterPrompt, draft },
       };
-      await saveProject(next);
+      projectRef.current = next;
+      setProject(next);
+
+      pendingDraftRef.current = draft;
+      if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = setTimeout(() => {
+        const pending = pendingDraftRef.current;
+        const latest = projectRef.current;
+        pendingDraftRef.current = null;
+        draftTimerRef.current = null;
+        if (pending === null || !latest) return;
+        const toSave: Project = {
+          ...latest,
+          masterPrompt: { ...latest.masterPrompt, draft: pending },
+        };
+        void saveProject(toSave);
+      }, DRAFT_DEBOUNCE_MS);
     },
-    [project],
+    [],
   );
 
   const addReferences = useCallback<ProjectContextValue["addReferences"]>(
     async (uploads) => {
+      let warnOverCap = 0;
+      let totalAfter = 0;
       await updateProject((p) => {
         const startIndex = (p.references.at(-1)?.index ?? 0) + 1;
         const cap = 14;
         const remaining = Math.max(0, cap - p.references.length);
         const toAdd = uploads.slice(0, remaining);
-        if (toAdd.length < uploads.length) {
-          pushToast(
-            "warning",
-            `Reference cap is ${cap} images; ${uploads.length - toAdd.length} skipped.`,
-          );
-        }
+        warnOverCap = uploads.length - toAdd.length;
         const newRefs: Reference[] = toAdd.map((u, i) => ({
           id: nanoid(),
           index: startIndex + i,
@@ -242,14 +282,21 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
           addedAt: Date.now(),
         }));
         const next = { ...p, references: [...p.references, ...newRefs] };
-        if (next.references.length > 5) {
-          pushToast(
-            "info",
-            `${next.references.length} references — fidelity may drop past 5.`,
-          );
-        }
+        totalAfter = next.references.length;
         return next;
       });
+      if (warnOverCap > 0) {
+        pushToast(
+          "warning",
+          `Reference cap is 14 images; ${warnOverCap} skipped.`,
+        );
+      }
+      if (totalAfter > 5) {
+        pushToast(
+          "info",
+          `${totalAfter} references — fidelity may drop past 5.`,
+        );
+      }
     },
     [updateProject, pushToast],
   );
@@ -271,6 +318,7 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
   );
 
   const resetAll = useCallback<ProjectContextValue["resetAll"]>(async () => {
+    const galleryId = gallery?.id;
     await updateProject((p) => ({
       ...p,
       sourceImage: null,
@@ -283,24 +331,25 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
         people: "none",
       },
     }));
-    // Doc 04 §4.10: default behavior also clears render history.
-    // We clear in-memory; we don't physically delete renders so a future
-    // "Restore from trash" affordance is possible. (Not in v1 UI.)
+    // Doc 04 §4.10: clearing renders is part of "Reset All". Physically
+    // delete from Dexie so blob storage doesn't accumulate across resets.
+    if (galleryId) await clearGalleryRenders(galleryId);
     setRenders([]);
     setActiveRenderId(null);
     pushToast("success", "Workspace reset.");
-  }, [updateProject, pushToast]);
+  }, [gallery, updateProject, pushToast]);
 
   // ---------- Render orchestration ----------
 
   const runRender = useCallback<ProjectContextValue["runRender"]>(
     async ({ mode, sketchMedium, amendment }) => {
-      if (!project || !gallery) return;
-      if (isRendering) return; // Double-click guard.
+      const currentProject = projectRef.current;
+      if (!currentProject || !gallery) return;
+      if (isRendering) return;
 
-      // Need a draft OR existing layers — otherwise nothing to render.
-      const draftText = project.masterPrompt.draft.trim();
-      const allLayerTexts = [...project.masterPrompt.layers.map((l) => l.text)];
+      const draftText = currentProject.masterPrompt.draft.trim();
+      const existingLayers = currentProject.masterPrompt.layers;
+      const allLayerTexts = [...existingLayers.map((l) => l.text)];
       if (draftText) allLayerTexts.push(draftText);
       if (allLayerTexts.length === 0) {
         pushToast(
@@ -309,32 +358,31 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
         );
         return;
       }
-
-      if (project.inputMode === "source" && !project.sourceImage) {
+      if (currentProject.inputMode === "source" && !currentProject.sourceImage) {
         pushToast("warning", "Choose a source image first.");
         return;
       }
 
+      const abortController = new AbortController();
+      renderAbortRef.current = abortController;
       setIsRendering(true);
       setRenderError(null);
+
       try {
-        // Build request.
         let sourceImageBase64: string | null = null;
         let sourceMimeType: string | null = null;
-        if (project.inputMode === "source" && project.sourceImage) {
-          const t = await blobForTransit(project.sourceImage.blob);
+        if (currentProject.inputMode === "source" && currentProject.sourceImage) {
+          const t = await blobForTransit(currentProject.sourceImage.blob);
           sourceImageBase64 = t.base64;
           sourceMimeType = t.mimeType;
         }
         const refs = await Promise.all(
-          project.references.map(async (r) => {
+          currentProject.references.map(async (r) => {
             const t = await blobForTransit(r.blob);
             return { index: r.index, base64: t.base64, mimeType: t.mimeType };
           }),
         );
 
-        // Amendment masks are stored as data URLs ("data:image/png;base64,…");
-        // the wire format wants just the base64 payload.
         const amendmentForWire = amendment
           ? {
               maskBase64: stripDataUrlPrefix(amendment.maskDataUrl),
@@ -343,10 +391,10 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
           : undefined;
 
         const body: RenderRequest = {
-          inputMode: project.inputMode,
+          inputMode: currentProject.inputMode,
           mode,
           sketchMedium,
-          scene: project.scene,
+          scene: currentProject.scene,
           promptLayers: allLayerTexts,
           sourceImageBase64,
           sourceMimeType,
@@ -358,6 +406,7 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
+          signal: abortController.signal,
         });
 
         if (!res.ok) {
@@ -369,19 +418,30 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
           throw new Error(`${msg}${detail}`);
         }
 
-        const missing = res.headers.get("x-audrey-missing-refs");
-        if (missing) {
+        const missingHeader = res.headers.get("x-audrey-missing-refs");
+        if (missingHeader) {
+          const indices = missingHeader
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const word = indices.length === 1 ? "Reference" : "References";
+          const verb = indices.length === 1 ? "was" : "were";
           pushToast(
             "warning",
-            `Reference ${missing} was missing and was skipped in the prompt.`,
+            `${word} ${indices.join(", ")} ${verb} missing and skipped in the prompt.`,
           );
         }
 
         const data = (await res.json()) as RenderResponse;
         const outputBlob = base64ToBlob(data.imageBase64, data.mimeType);
-        const outputThumbnailDataUrl = await makeThumbnail(outputBlob, 256);
+        const outputThumbnailDataUrl = await makeThumbnail(
+          outputBlob,
+          THUMBNAIL_MAX_EDGE,
+        );
 
-        // Commit prompt layer (the just-typed draft becomes a layer).
+        // Commit prompt layer: the just-typed draft becomes a layer attached
+        // to the new render. The full list of layer IDs that produced this
+        // render is captured in promptLayerIds for robust revert.
         const renderId = nanoid();
         const newLayer: PromptLayer | null = draftText
           ? {
@@ -392,17 +452,23 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
             }
           : null;
 
+        const promptLayerIds = [
+          ...existingLayers.map((l) => l.id),
+          ...(newLayer ? [newLayer.id] : []),
+        ];
+
         const snapshot: RenderInputsSnapshot = {
-          inputMode: project.inputMode,
-          scene: project.scene,
+          inputMode: currentProject.inputMode,
+          scene: currentProject.scene,
           promptLayers: allLayerTexts,
-          references: project.references.map((r) => ({
+          promptLayerIds,
+          references: currentProject.references.map((r) => ({
             id: r.id,
             index: r.index,
             filename: r.filename,
           })),
           amendment,
-          sourceImageRef: project.sourceImage ? "current-source" : null,
+          sourceImageRef: currentProject.sourceImage ? "current-source" : null,
         };
 
         const render: Render = {
@@ -434,45 +500,79 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
         setRenders((prev) => [...prev, render]);
         setActiveRenderId(render.id);
       } catch (e) {
-        const msg =
-          e instanceof Error ? e.message : "Unknown error during render.";
-        setRenderError(msg);
-        pushToast("error", msg);
+        if (e instanceof Error && e.name === "AbortError") {
+          pushToast("info", "Render cancelled.");
+        } else {
+          const msg =
+            e instanceof Error ? e.message : "Unknown error during render.";
+          setRenderError(msg);
+          pushToast("error", msg);
+        }
       } finally {
+        renderAbortRef.current = null;
         setIsRendering(false);
       }
     },
-    [project, gallery, isRendering, pushToast, updateProject],
+    [gallery, isRendering, pushToast, updateProject],
   );
+
+  const abortRender = useCallback<ProjectContextValue["abortRender"]>(() => {
+    renderAbortRef.current?.abort();
+  }, []);
 
   const setActiveRender = useCallback<ProjectContextValue["setActiveRender"]>(
     (id) => setActiveRenderId(id),
     [],
   );
 
+  // Roll the master-prompt layers and scene back to the snapshot stored on
+  // the target render. Prefer matching by stable layer ID; fall back to
+  // matching by text for any snapshot that lacks IDs (defensive — current
+  // code always populates them).
   const revertToRender = useCallback<ProjectContextValue["revertToRender"]>(
     async (id) => {
       const target = renders.find((r) => r.id === id);
-      if (!target || !project) return;
-      // Roll master-prompt layers and scene back to this render's snapshot.
-      const snapshotLayerTexts = target.inputs.promptLayers;
-      // Match texts to existing layers where possible to keep IDs/timestamps.
+      const currentProject = projectRef.current;
+      if (!target || !currentProject) return;
+
+      const snapshotIds = target.inputs.promptLayerIds;
+      const snapshotTexts = target.inputs.promptLayers;
       const matched: PromptLayer[] = [];
-      const remaining = [...project.masterPrompt.layers];
-      for (const text of snapshotLayerTexts) {
-        const idx = remaining.findIndex((l) => l.text === text);
-        if (idx >= 0) {
-          matched.push(remaining[idx]);
-          remaining.splice(idx, 1);
-        } else {
-          matched.push({
-            id: nanoid(),
-            text,
-            renderId: target.id,
-            createdAt: target.createdAt,
-          });
+
+      if (snapshotIds && snapshotIds.length === snapshotTexts.length) {
+        const byId = new Map(
+          currentProject.masterPrompt.layers.map((l) => [l.id, l]),
+        );
+        for (let i = 0; i < snapshotIds.length; i++) {
+          const existing = byId.get(snapshotIds[i]);
+          matched.push(
+            existing ?? {
+              id: snapshotIds[i],
+              text: snapshotTexts[i],
+              renderId: target.id,
+              createdAt: target.createdAt,
+            },
+          );
+        }
+      } else {
+        // Legacy / missing IDs: match by text (first occurrence consumes).
+        const remaining = [...currentProject.masterPrompt.layers];
+        for (const text of snapshotTexts) {
+          const idx = remaining.findIndex((l) => l.text === text);
+          if (idx >= 0) {
+            matched.push(remaining[idx]);
+            remaining.splice(idx, 1);
+          } else {
+            matched.push({
+              id: nanoid(),
+              text,
+              renderId: target.id,
+              createdAt: target.createdAt,
+            });
+          }
         }
       }
+
       await updateProject((p) => ({
         ...p,
         scene: target.inputs.scene,
@@ -480,7 +580,7 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
       }));
       setActiveRenderId(target.id);
     },
-    [renders, project, updateProject],
+    [renders, updateProject],
   );
 
   const value = useMemo<ProjectContextValue>(
@@ -501,6 +601,7 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
       removeReference,
       resetAll,
       runRender,
+      abortRender,
       setActiveRender,
       revertToRender,
       pushToast,
@@ -523,6 +624,7 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
       removeReference,
       resetAll,
       runRender,
+      abortRender,
       setActiveRender,
       revertToRender,
       pushToast,

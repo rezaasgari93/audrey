@@ -16,6 +16,10 @@ export const ACCEPTED_EXTS = [".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif"
 
 export const DEFAULT_MAX_BYTES = 25 * 1024 * 1024; // 25 MB per doc 01 §3.1
 
+// Used for both reference-tile thumbnails (upload pipeline) and render-strip
+// thumbnails (post-render). One value, one source of truth.
+export const THUMBNAIL_MAX_EDGE = 256;
+
 export type UploadError =
   | { kind: "unsupported-type"; filename: string }
   | { kind: "too-large"; filename: string; bytes: number; max: number }
@@ -104,7 +108,7 @@ export async function processUpload(
     };
   }
 
-  const thumbnailDataUrl = await makeThumbnail(blob, 192);
+  const thumbnailDataUrl = await makeThumbnail(blob, THUMBNAIL_MAX_EDGE);
 
   return {
     ok: true,

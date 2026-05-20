@@ -79,6 +79,11 @@ export interface RenderInputsSnapshot {
   inputMode: InputMode;
   scene: SceneSettings;
   promptLayers: string[];
+  // Stable IDs for each layer in `promptLayers`, same length and order.
+  // Lets revertToRender match by identity rather than by text — see
+  // lib/context/ProjectContext.tsx::revertToRender. Optional only to
+  // tolerate any pre-existing snapshots that lack the field.
+  promptLayerIds?: string[];
   references: { id: string; index: number; filename: string }[];
   amendment?: AmendmentMask;
   sourceImageRef: string | null;
@@ -189,6 +194,38 @@ export const renderRequestSchema = z
         message: "sourceImageBase64 required in source mode",
         path: ["sourceImageBase64"],
       });
+    }
+    // Reference indices must form a contiguous 1..N set (no duplicates,
+    // no holes, none above the array length or the model's 14-image cap).
+    // The client renumbers on add/remove so this is defense-in-depth — but
+    // making it explicit means a future bug in client code surfaces at the
+    // API boundary instead of confusing the model.
+    if (val.references.length > 0) {
+      const seen = new Set<number>();
+      for (const r of val.references) {
+        if (r.index > 14) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Reference index ${r.index} exceeds the 14-image cap`,
+            path: ["references"],
+          });
+        }
+        if (r.index > val.references.length) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Reference index ${r.index} exceeds the count of attached references (${val.references.length})`,
+            path: ["references"],
+          });
+        }
+        if (seen.has(r.index)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Duplicate reference index ${r.index}`,
+            path: ["references"],
+          });
+        }
+        seen.add(r.index);
+      }
     }
     if (val.amendment && val.inputMode !== "source") {
       ctx.addIssue({
