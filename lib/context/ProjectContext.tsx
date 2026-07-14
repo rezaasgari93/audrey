@@ -138,6 +138,20 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // Cancel any pending debounced draft flush without persisting it. Call
+  // this immediately before any code path that intentionally clears or
+  // overwrites `masterPrompt.draft` — otherwise a fast-completing render
+  // (or resetAll) can be followed 350ms later by the debounced timer
+  // firing and writing the stale pre-commit draft back to IDB, ghosting
+  // the text back on the next mount.
+  const cancelPendingDraftFlush = useCallback(() => {
+    if (draftTimerRef.current) {
+      clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = null;
+    }
+    pendingDraftRef.current = null;
+  }, []);
+
   // Flush any pending debounced draft when the provider unmounts.
   useEffect(
     () => () => {
@@ -319,6 +333,9 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
 
   const resetAll = useCallback<ProjectContextValue["resetAll"]>(async () => {
     const galleryId = gallery?.id;
+    // We're about to zero out masterPrompt.draft — drop any in-flight
+    // debounced write so it can't resurrect the pre-reset text in IDB.
+    cancelPendingDraftFlush();
     await updateProject((p) => ({
       ...p,
       sourceImage: null,
@@ -337,7 +354,7 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
     setRenders([]);
     setActiveRenderId(null);
     pushToast("success", "Workspace reset.");
-  }, [gallery, updateProject, pushToast]);
+  }, [gallery, updateProject, pushToast, cancelPendingDraftFlush]);
 
   // ---------- Render orchestration ----------
 
@@ -348,6 +365,11 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
       if (isRendering) return;
 
       const draftText = currentProject.masterPrompt.draft.trim();
+      // Captured at render-start and used later when building the snapshot's
+      // promptLayerIds. Safe because nothing else mutates masterPrompt.layers
+      // while isRendering is true (the isRendering gate above blocks a second
+      // runRender, and no other code path appends layers). If that invariant
+      // ever changes, this needs to become a fresh read at commit time.
       const existingLayers = currentProject.masterPrompt.layers;
       const allLayerTexts = [...existingLayers.map((l) => l.text)];
       if (draftText) allLayerTexts.push(draftText);
@@ -488,6 +510,11 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
         };
 
         await appendRender(render);
+        // Drop any in-flight debounced draft write before the commit
+        // clears masterPrompt.draft — otherwise a 350ms-late flush can
+        // re-write the pre-render draft to IDB and it ghosts back on
+        // next mount.
+        cancelPendingDraftFlush();
         await updateProject((p) => ({
           ...p,
           masterPrompt: {
@@ -513,7 +540,7 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
         setIsRendering(false);
       }
     },
-    [gallery, isRendering, pushToast, updateProject],
+    [gallery, isRendering, pushToast, updateProject, cancelPendingDraftFlush],
   );
 
   const abortRender = useCallback<ProjectContextValue["abortRender"]>(() => {
@@ -556,6 +583,12 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
         }
       } else {
         // Legacy / missing IDs: match by text (first occurrence consumes).
+        // When no existing layer matches, the fabricated replacement is
+        // stamped with the *target* render's id/createdAt rather than the
+        // original layer's — that provenance is unrecoverable from a
+        // snapshot that only stored text. Cosmetic (round-trip of text
+        // and ordering is preserved); current code always populates
+        // promptLayerIds so this branch is a defensive fallback only.
         const remaining = [...currentProject.masterPrompt.layers];
         for (const text of snapshotTexts) {
           const idx = remaining.findIndex((l) => l.text === text);
