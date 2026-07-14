@@ -23,6 +23,7 @@ A working prototype already exists ("Project Aether" is an example project shown
 | 4 | [`04-data-model.md`](04-data-model.md) | Entities, TypeScript types, IndexedDB (Dexie) schema, lifecycle ops. | v1.0 |
 | 5 | [`05-prompt-template.md`](05-prompt-template.md) | How UI inputs become the actual prompt + image parts sent to Gemini. | v1.0 |
 | 6 | [`06-user-flow.md`](06-user-flow.md) | Happy paths + error/edge states + loading states. | v1.0 |
+| 7 | [`07-engineer-handoff.md`](07-engineer-handoff.md) | **Start here after reading 01–06.** Current implementation status, what to build next, invariants to preserve, landmines. | Live — updated each handoff |
 
 ---
 
@@ -80,6 +81,20 @@ A handful of smaller decisions were made as **locked defaults** to keep momentum
 9. **Tune prompts** — iterate on doc 5's strings against real outputs.
 
 Milestone 4 is the first end-to-end usable cut (upload → prompt → photoreal render → compare → save).
+
+---
+
+## Implementation status (as of the last handoff)
+
+Milestones 1–4 are **code-complete but not yet validated end-to-end**:
+
+- Scaffold, Dexie schema, `/api/render`, prompt-template module — done.
+- Input Panel (Source/Empty/Reset, Master Prompt + history, Reference Gallery, Scene) — done.
+- Output Area with Comparison slider, history strip, PipelineBar (Render Photoreal + Save), Toaster, ConfirmModal — done.
+- Amendment Mask, Crop Image, Sketch sub-mode — **stubbed** (placeholder text in tabs / pipeline).
+- Sanity check script (`npm run sanity-check`) exists but **has not been run** against a real fixture; the two "does the model behave" questions from the kickoff are open.
+
+The full status matrix, next actions, invariants, and landmines live in **[`07-engineer-handoff.md`](07-engineer-handoff.md)** — read that before you write code.
 
 ---
 
