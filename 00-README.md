@@ -90,8 +90,8 @@ Milestones 1–4 are **code-complete but not yet validated end-to-end**:
 
 - Scaffold, Dexie schema, `/api/render`, prompt-template module — done.
 - Input Panel (Source/Empty/Reset, Master Prompt + history, Reference Gallery, Scene) — done.
-- Output Area with Comparison slider, history strip, PipelineBar (Render Photoreal + Save), Toaster, ConfirmModal — done.
-- Amendment Mask, Crop Image, Sketch sub-mode — **stubbed** (placeholder text in tabs / pipeline).
+- Output Area with Comparison slider, history strip, PipelineBar (Render Photoreal + Sketch sub-mode with four mediums + Save Render/Sketch), Toaster, ConfirmModal — done.
+- Amendment Mask and Crop Image — **stubbed** (placeholder text in tabs).
 - Sanity check script (`npm run sanity-check`) exists but **has not been run** against a real fixture; the two "does the model behave" questions from the kickoff are open.
 
 The full status matrix, next actions, invariants, and landmines live in **[`07-engineer-handoff.md`](07-engineer-handoff.md)** — read that before you write code.

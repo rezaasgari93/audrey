@@ -33,7 +33,7 @@
 | Download helper | `lib/images/download.ts` | `audrey_<slug>_<YYYY-MM-DDTHH-mm>_<mode>.png` per doc 01 §4.4. |
 | Project state / render orchestration | `lib/context/ProjectContext.tsx` | Single React context. Debounced draft persistence (350 ms). Renders via `AbortController`. Revert uses stable layer IDs (`promptLayerIds` in the snapshot) with a text-match fallback. |
 | Input Panel | `components/workspace/*.tsx` | Source/Empty/Reset, MasterPrompt + PromptHistory, ReferenceGallery (click-to-insert `[REF NN]`, renumbers on remove), ScenePanel (Source Mode / Camera / Light / People pills), FeedbackPanel (`mailto:` with `NEXT_PUBLIC_FEEDBACK_RECIPIENT_EMAIL`). |
-| Output Area (partial) | `components/output/*.tsx` | TabBar (3 tabs), Comparison slider (both-images clip-path), HistoryStrip (mode badge, revert on click), PipelineBar (Render Photoreal + Stop + Save Render). |
+| Output Area (partial) | `components/output/*.tsx` | TabBar (3 tabs), Comparison slider (both-images clip-path), HistoryStrip (mode badge, revert on click), PipelineBar (Render Photoreal + Stop + Sketch sub-mode with 4 mediums + Close Sketch Mode + Save Render/Sketch). |
 | UI primitives | `components/ui/Button.tsx`, `ConfirmModal.tsx`, `Toaster.tsx` | Confirm modal handles Esc/Enter and click-outside; Toaster auto-dismisses non-errors after 4.5 s. |
 | Sanity check script | `scripts/sanity-check.ts` | Two-test harness: (1) does `preserve everything else` hold; (2) does the model respect a B/W mask. **Not run yet.** |
 
@@ -43,7 +43,6 @@
 |---|---|---|
 | Amendment Mask | `components/output/OutputArea.tsx` `tab === "amendment-mask"` branch | M6 |
 | Crop Image | Same file, `crop-image` branch | M7 |
-| Sketch sub-mode | `components/output/PipelineBar.tsx` (label "Sketch · coming after pause") | M5 |
 
 ### 2.3 Deferred by design (do not build without a spec update)
 
@@ -88,20 +87,11 @@ Do:
 
 **Acceptance:** either the model behaves as claimed and you can proceed, or you've filed clear notes for Reza about how it drifts.
 
-### Milestone 5 — Sketch sub-mode
+### Milestone 5 — Sketch sub-mode — DONE
 
-**Entry:** M0 done, dev server smoke passes.
+Landed in `feat/m5-sketch-submode`. Local `sketchMode: SketchMedium | null` in `PipelineBar.tsx` (transient, not persisted). Four medium buttons in doc 01 §4.3.2 order fire `runRender({ mode: "sketch", sketchMedium })` and highlight the active medium. Clicking Render (Photoreal) exits the sub-mode. Close Sketch Mode link appears while in sub-mode. Save label swaps Render ↔ Sketch based on sub-mode; filename mode still derives from `activeRender.mode` for correctness. History badge already worked (`HistoryStrip.tsx:20`).
 
-Do:
-
-1. In `components/output/PipelineBar.tsx`, replace the "Sketch · coming after pause" label with a row of four medium buttons (`Pencil`, `Fine-line fountain pen`, `Watercolour`, `Magic marker`). Order per doc 01 §4.3.2.
-2. Add local state for `sketchMode: SketchMedium | null` (probably lift to `ProjectContext` or a small dedicated context — do not persist to Dexie; it's transient UI state per doc 02 §6).
-3. When a medium is clicked: enter sketch sub-mode, show a **Close Sketch Mode** link in the top-right of the pipeline bar, swap **Save Render** → **Save Sketch**, and immediately fire `runRender({ mode: "sketch", sketchMedium: <chosen> })`. Clicking a different medium re-fires with that medium (no manual close needed).
-4. **Close Sketch Mode** returns the bar to the photoreal default. Most recent sketch stays in history and remains the active output.
-5. `Save Sketch` uses `mode: "sketch"` in the filename generator (`defaultFilename` already handles this).
-6. History strip already shows a "Sketch" badge — verify it renders correctly for sketch renders (`components/output/HistoryStrip.tsx` derives it from `r.mode`).
-
-**Acceptance:** four sketch mediums produce four visibly different renders from the same inputs; each appears in the history strip with the "Sketch" badge; closing sketch mode restores the Photoreal button.
+Not yet validated against the real API — needs M0 first to see the four mediums render as visibly distinct.
 
 ### Milestone 6 — Amendment Mask
 
@@ -225,3 +215,4 @@ There is no test suite yet. Milestone 8+ is a good time to add Vitest coverage f
 ## Changelog
 
 - **2026-07-14** — Initial handoff after PR1 (scaffold + review pass). Milestones 1–4 code-complete; M0 (sanity + smoke), M5–M9 pending.
+- **2026-07-14** — M5 (Sketch sub-mode) landed on `feat/m5-sketch-submode`. UI-only change to `components/output/PipelineBar.tsx`; prompt template already handled `mode: "sketch"` via `SKETCH_STYLES`. M0 still pending.
