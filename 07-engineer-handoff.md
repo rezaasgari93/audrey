@@ -10,9 +10,9 @@
 
 - Stack is wired and typechecks (`npm run typecheck`). Milestones 1–4 of the build order in `00-README.md` are code-complete: Dexie storage, `/api/render`, prompt-template, Input Panel, Output Area, Comparison slider, history strip, save-as-4K-PNG, render orchestration + revert.
 - **The end-to-end path has not been exercised with a real API key.** Before you build anything new, satisfy Milestone 0 below (sanity check + smoke).
-- Amendment Mask, Crop Image, and the Sketch sub-mode are **stubbed** (visible tabs/labels, no logic). Those are Milestones 5–7.
+- Amendment Mask and Crop Image are **stubbed** (visible tabs/labels, no logic). Those are Milestones 6–7. Sketch sub-mode (Milestone 5) is live in the pipeline bar with all four mediums wired.
 - Feature-flagged out (do not build): Map input, Life Engine tab. Reserve fields exist in the data model.
-- The current branch is `feat/milestone-1-4-scaffold`. Two commits on top of `main`: initial scaffold + a PR1-review pass. Open a new branch per milestone.
+- Two milestones on top of `main`: PR1 (scaffold + review pass) and PR2 (sketch sub-mode). Open a new branch per milestone.
 
 ---
 

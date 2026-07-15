@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Download, Loader2, Sparkles, X } from "lucide-react";
 
 import { Button } from "@/components/ui/Button";
@@ -27,14 +27,36 @@ export function PipelineBar() {
     pushToast,
   } = useProject();
 
-  // Transient UI state per doc 02 §6 — not persisted. Clicking Render
-  // (Photoreal) or Close Sketch Mode returns to null (photoreal default).
-  const [sketchMode, setSketchMode] = useState<SketchMedium | null>(null);
+  // Sub-mode visibility is DERIVED from activeRender.mode so that reverting
+  // to a sketch from history auto-expands the medium row, and so a failed /
+  // aborted sketch render doesn't leave the sub-mode pinned. Two transient
+  // overrides:
+  //   - `renderingMedium`: which medium is currently in flight (spinner + primary
+  //     highlight during the request; cleared automatically on completion).
+  //   - `justClosedSketch`: user explicitly clicked "Close Sketch Mode" — hides
+  //     the sub-mode even though activeRender is still a sketch. Cleared
+  //     whenever the active render changes (a new render or a revert), so
+  //     the flag never sticks across navigation.
+  const [renderingMedium, setRenderingMedium] = useState<SketchMedium | null>(
+    null,
+  );
+  const [justClosedSketch, setJustClosedSketch] = useState(false);
 
   const activeRender = useMemo(
     () => renders.find((r) => r.id === activeRenderId) ?? null,
     [renders, activeRenderId],
   );
+
+  // Clear the in-flight medium when the render finishes (success or fail).
+  useEffect(() => {
+    if (!isRendering) setRenderingMedium(null);
+  }, [isRendering]);
+
+  // Any change to the active render (new render lands, user reverts) makes
+  // the previous explicit Close moot — reset the override.
+  useEffect(() => {
+    setJustClosedSketch(false);
+  }, [activeRenderId]);
 
   if (!project) return null;
 
@@ -45,29 +67,47 @@ export function PipelineBar() {
   const notRenderable = needsSource || !promptReady;
   const renderDisabled = isRendering || notRenderable;
 
-  const inSketchMode = sketchMode !== null;
+  const activeIsSketch = activeRender?.mode === "sketch";
+  const activeMedium: SketchMedium | null =
+    renderingMedium ??
+    (activeIsSketch && !justClosedSketch
+      ? (activeRender?.sketchMedium ?? null)
+      : null);
+  const inSketchMode = activeMedium !== null;
 
-  const disabledTooltip = needsSource
-    ? "Choose a source image first."
-    : !promptReady
-      ? "Write something in the master prompt first."
-      : "";
+  // Save label / tooltip / filename all describe the ACTIVE render, not the
+  // current UI sub-mode. Divergence here was the PR2 blocker.
+  const activeIsSketchForSave = activeRender?.mode === "sketch";
+  const saveLabel = activeIsSketchForSave ? "Save Sketch" : "Save Render";
+  const saveTooltip = activeRender
+    ? `Save active ${activeIsSketchForSave ? "sketch" : "render"} as 4K PNG`
+    : "Render first";
+
+  const disabledTooltip = isRendering
+    ? "Render in progress…"
+    : needsSource
+      ? "Choose a source image first."
+      : !promptReady
+        ? "Write something in the master prompt first."
+        : "";
 
   const onRender = () => {
     if (renderDisabled) return;
-    // Explicit photoreal action exits sketch sub-mode.
-    setSketchMode(null);
+    // Explicit photoreal action exits sketch sub-mode until a new sketch
+    // render / revert changes the active render.
+    setJustClosedSketch(true);
     void runRender({ mode: "photoreal" });
   };
 
   const onSketchMedium = (medium: SketchMedium) => {
     if (renderDisabled) return;
-    setSketchMode(medium);
+    setJustClosedSketch(false);
+    setRenderingMedium(medium);
     void runRender({ mode: "sketch", sketchMedium: medium });
   };
 
   const onCloseSketch = () => {
-    setSketchMode(null);
+    setJustClosedSketch(true);
   };
 
   const onSave = () => {
@@ -81,8 +121,6 @@ export function PipelineBar() {
     });
     downloadBlob(activeRender.outputBlob, filename);
   };
-
-  const saveLabel = inSketchMode ? "Save Sketch" : "Save Render";
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3">
@@ -98,12 +136,14 @@ export function PipelineBar() {
           disabled={renderDisabled}
           title={disabledTooltip}
         >
-          {isRendering && !inSketchMode ? (
+          {isRendering && renderingMedium === null ? (
             <Loader2 size={14} className="animate-spin" />
           ) : (
             <Sparkles size={14} />
           )}
-          {isRendering && !inSketchMode ? "Rendering…" : "Render (Photoreal)"}
+          {isRendering && renderingMedium === null
+            ? "Rendering…"
+            : "Render (Photoreal)"}
         </Button>
         {isRendering && (
           <Button
@@ -118,8 +158,8 @@ export function PipelineBar() {
           Sketch
         </span>
         {SKETCH_MEDIUMS.map(({ medium, label }) => {
-          const active = sketchMode === medium;
-          const rendering = isRendering && active;
+          const active = activeMedium === medium;
+          const rendering = isRendering && renderingMedium === medium;
           return (
             <Button
               key={medium}
@@ -140,30 +180,26 @@ export function PipelineBar() {
             </Button>
           );
         })}
-        {inSketchMode && (
-          <Button
-            variant="ghost"
-            onClick={onCloseSketch}
-            title="Return to the photoreal default bar"
-            className="text-xs"
-          >
-            Close Sketch Mode
-          </Button>
-        )}
         <div className="mx-2 h-6 w-px bg-[var(--color-border)]" />
         <Button
           variant="secondary"
           onClick={onSave}
           disabled={!activeRender}
-          title={
-            activeRender
-              ? `Save active ${inSketchMode ? "sketch" : "render"} as 4K PNG`
-              : "Render first"
-          }
+          title={saveTooltip}
         >
           <Download size={14} />
           {saveLabel}
         </Button>
+        {inSketchMode && (
+          <Button
+            variant="ghost"
+            onClick={onCloseSketch}
+            title="Return to the photoreal default bar"
+            className="ml-1 text-xs"
+          >
+            Close Sketch Mode
+          </Button>
+        )}
       </div>
     </div>
   );
