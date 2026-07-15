@@ -1,6 +1,14 @@
 "use client";
 
 import { useProject } from "@/lib/context/ProjectContext";
+import type { SketchMedium } from "@/lib/types";
+
+const SKETCH_BADGE_LABEL: Record<SketchMedium, string> = {
+  pencil: "Pencil",
+  "fine-line-fountain-pen": "Fine-line",
+  watercolour: "Watercolour",
+  "magic-marker": "Marker",
+};
 
 export function HistoryStrip() {
   const { renders, activeRenderId, revertToRender } = useProject();
@@ -17,7 +25,10 @@ export function HistoryStrip() {
     <div className="flex items-center gap-2 overflow-x-auto border-t border-[var(--color-border)] px-4 py-2">
       {renders.map((r) => {
         const active = r.id === activeRenderId;
-        const modeLabel = r.mode === "sketch" ? "Sketch" : "Render";
+        const modeLabel =
+          r.mode === "sketch"
+            ? (r.sketchMedium && SKETCH_BADGE_LABEL[r.sketchMedium]) || "Sketch"
+            : "Render";
         return (
           <button
             key={r.id}

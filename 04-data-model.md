@@ -282,6 +282,12 @@ The route is stateless — all history/layering context arrives in `promptLayers
 
 ## 7. Open data-model questions
 
-1. **Source image per-render storage** (§3 note): store-once vs. content-hash map. v1 can store once on the project; revisit if reverting to renders with different sources becomes a real workflow.
-2. **Forking behavior** (§4.9): confirm append-only is acceptable vs. branching.
-3. **Reset All and render history** (§4.10): confirm renders are cleared (default) vs. preserved.
+1. **Source image per-render storage** (§3 note): store-once vs. content-hash map. v1 stores a sentinel string (`"current-source"`) on the render snapshot and reads the current project's source when displaying. Revisit if reverting to a render whose source has since changed becomes a real workflow.
+2. **Forking behavior** (§4.9): **decided — append-only.** Reverting changes the starting context for the next render; history is never truncated. Implemented in `ProjectContext::revertToRender`.
+3. **Reset All and render history** (§4.10): **decided — renders are cleared.** `resetAll` calls `clearGalleryRenders` so blob storage doesn't leak across resets. The confirm modal ("Tip: save any outputs you want to keep before resetting") satisfies the export-first nudge.
+
+## 8. Notes on the implemented snapshot
+
+The scaffold added one field beyond the v1.0 spec:
+
+- **`RenderInputsSnapshot.promptLayerIds`** — the ordered list of `PromptLayer.id`s in effect at render time. `revertToRender` prefers this over text matching so identical layer text doesn't confuse the revert path. Optional-typed to tolerate any legacy snapshots that predate the field (there shouldn't be any in practice — Dexie is v1 and always writes new-shape records).
